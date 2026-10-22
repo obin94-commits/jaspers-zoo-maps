@@ -1,415 +1,456 @@
 import {
-  ArrowLeft,
-  ArrowRight,
+  ArrowUpRight,
   Binoculars,
-  BusFront,
-  CalendarDays,
   CarFront,
   Check,
-  ChevronRight,
-  CircleHelp,
-  Clock3,
+  Compass,
   ExternalLink,
+  Globe2,
   Heart,
-  ListChecks,
-  Map,
+  LocateFixed,
+  Map as MapIcon,
   MapPin,
+  Mountain,
   Navigation,
   PawPrint,
+  Route,
   Search,
   Sparkles,
-  Star,
-  TrainFront,
+  X,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { AtlasMap } from './components/AtlasMap'
-import { ZooCampusMap } from './components/ZooCampusMap'
+import { useMemo, useRef, useState } from 'react'
+import { MapExplorer, type MapExplorerHandle } from './components/MapExplorer'
 import { HOME_BASE, zoos } from './data/zoos'
 import { usePassport } from './hooks/usePassport'
 import type { ZooStatus } from './lib/passport'
 import { buildDirectionsUrl } from './lib/routes'
-import type { Zoo } from './types'
+import type { Animal, MapSpot, Zoo } from './types'
 
-type View = 'atlas' | 'passport'
+type DrawerTab = 'overview' | 'grounds' | 'animals'
 
-function statusCopy(status: ZooStatus | undefined) {
-  if (status === 'visited') return { label: 'Visited', icon: <Check size={15} /> }
-  if (status === 'wishlist') return { label: 'Want to visit', icon: <Heart size={15} /> }
-  return { label: 'Add to passport', icon: <PawPrint size={15} /> }
+function matchesZoo(zoo: Zoo, query: string) {
+  const haystack = [
+    zoo.name,
+    zoo.shortName,
+    zoo.city,
+    zoo.state,
+    zoo.tagline,
+    ...zoo.animals.flatMap((animal) => [animal.name, animal.habitat]),
+  ]
+    .join(' ')
+    .toLowerCase()
+  return haystack.includes(query.trim().toLowerCase())
 }
 
-function ZooCard({
+function ExplorerHeader({
+  visited,
+  total,
+  onReset,
+  onOpenPassport,
+}: {
+  visited: number
+  total: number
+  onReset: () => void
+  onOpenPassport: () => void
+}) {
+  return (
+    <header className="explorer-header">
+      <h1 aria-label="Jasper's Zoo Maps" className="explorer-brand-heading">
+        <button type="button" className="explorer-brand" onClick={onReset}>
+          <span className="brand-orbit"><Globe2 size={23} /><i /></span>
+          <span><strong>Jasper’s</strong><small>ZOO MAPS</small></span>
+        </button>
+      </h1>
+      <div className="live-map-chip"><i /> LIVE EXPLORER</div>
+      <button type="button" className="passport-chip" onClick={onOpenPassport} aria-label="Open passport">
+        <PawPrint size={18} />
+        <span><strong>{visited}/{total}</strong><small>MY PASSPORT</small></span>
+      </button>
+    </header>
+  )
+}
+
+function MapControls({
+  threeDimensional,
+  onReset,
+  onToggleDimension,
+  onHome,
+}: {
+  threeDimensional: boolean
+  onReset: () => void
+  onToggleDimension: () => void
+  onHome: () => void
+}) {
+  return (
+    <div className="map-mode-controls" aria-label="Explorer view controls">
+      <button type="button" onClick={onReset} aria-label="Reset globe view" data-tooltip="Orbit view">
+        <Globe2 size={20} />
+      </button>
+      <button
+        type="button"
+        className={threeDimensional ? 'active' : ''}
+        onClick={onToggleDimension}
+        aria-label={threeDimensional ? 'Flatten to 2D' : 'Tilt to 3D'}
+        data-tooltip={threeDimensional ? '2D map' : '3D terrain'}
+      >
+        <Mountain size={20} />
+      </button>
+      <button type="button" onClick={onHome} aria-label="Fly to Woodbine home base" data-tooltip="Home base">
+        <LocateFixed size={20} />
+      </button>
+    </div>
+  )
+}
+
+function DiscoveryRail({
+  zoos: visibleZoos,
+  selectedId,
+  passport,
+  onSelect,
+}: {
+  zoos: Zoo[]
+  selectedId?: string
+  passport: Record<string, ZooStatus | undefined>
+  onSelect: (zoo: Zoo) => void
+}) {
+  return (
+    <section className="discovery-rail" aria-label="Zoo discovery rail">
+      <div className="rail-heading">
+        <span><Compass size={16} /> DISCOVER</span>
+        <strong>{visibleZoos.length} mapped {visibleZoos.length === 1 ? 'zoo' : 'zoos'}</strong>
+      </div>
+      <div className="rail-scroller">
+        {visibleZoos.map((zoo) => (
+          <button
+            type="button"
+            className={`rail-zoo ${selectedId === zoo.id ? 'selected' : ''}`}
+            key={zoo.id}
+            onClick={() => onSelect(zoo)}
+            aria-label={`Fly to ${zoo.name}`}
+          >
+            <span className="rail-emoji" style={{ '--zoo-accent': zoo.palette[1] } as React.CSSProperties}>{zoo.heroEmoji}</span>
+            <span className="rail-zoo-copy">
+              <small>{zoo.city}, {zoo.state}</small>
+              <strong>{zoo.shortName}</strong>
+              <em><Navigation size={11} /> {zoo.distanceMiles} mi from home</em>
+            </span>
+            <span className={`rail-status ${passport[zoo.id] ?? ''}`}>
+              {passport[zoo.id] === 'visited' ? <Check size={13} /> : passport[zoo.id] === 'wishlist' ? <Heart size={13} /> : <ArrowUpRight size={13} />}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function HabitatExplorer({ spots, palette }: { spots: MapSpot[]; palette: [string, string] }) {
+  const [selectedId, setSelectedId] = useState(spots[0]?.id)
+  const selected = spots.find((spot) => spot.id === selectedId) ?? spots[0]
+
+  return (
+    <div className="drawer-campus" style={{ '--campus-dark': palette[0], '--campus-bright': palette[1] } as React.CSSProperties}>
+      <div className="campus-topography" />
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <path d="M50 4 C28 16 23 29 37 40 C49 49 69 48 67 62 C65 76 38 72 47 95" />
+        <path d="M10 54 C24 48 27 37 39 36 M66 62 C79 60 82 49 91 43" />
+      </svg>
+      {spots.map((spot, index) => (
+        <button
+          type="button"
+          key={spot.id}
+          className={`campus-pin ${selected?.id === spot.id ? 'active' : ''}`}
+          style={{ left: `${spot.x}%`, top: `${spot.y}%`, '--spot-color': spot.color } as React.CSSProperties}
+          onClick={() => setSelectedId(spot.id)}
+          aria-label={`Explore habitat ${spot.label}`}
+        >
+          <span>{spot.emoji}</span><b>{index + 1}</b>
+        </button>
+      ))}
+      {selected && (
+        <div className="campus-caption">
+          <span>{selected.emoji}</span>
+          <div><strong>{selected.label}</strong><p>{selected.detail}</p></div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AnimalExplorer({ animals }: { animals: Animal[] }) {
+  const [selectedIndex, setSelectedIndex] = useState(0)
+  const animal = animals[selectedIndex]
+
+  return (
+    <div className="drawer-animal-explorer">
+      <div className="animal-picker" role="tablist" aria-label="Featured animals">
+        {animals.map((item, index) => (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={selectedIndex === index}
+            className={selectedIndex === index ? 'active' : ''}
+            key={item.name}
+            onClick={() => setSelectedIndex(index)}
+          >
+            <span>{item.emoji}</span><small>{item.name}</small>
+          </button>
+        ))}
+      </div>
+      <article className="animal-focus" style={{ '--animal-accent': animal.accent } as React.CSSProperties}>
+        <div className="animal-focus-art"><span>{animal.emoji}</span></div>
+        <div>
+          <small>{animal.status}</small>
+          <h3>{animal.name}</h3>
+          <em>{animal.scientificName}</em>
+          <p>{animal.fact}</p>
+          <strong><MapPin size={14} /> {animal.habitat}</strong>
+        </div>
+      </article>
+    </div>
+  )
+}
+
+function ZooDrawer({
   zoo,
   status,
-  onExplore,
+  visitedCount,
+  onClose,
   onStatus,
 }: {
   zoo: Zoo
   status: ZooStatus | undefined
-  onExplore: () => void
-  onStatus: () => void
+  visitedCount: number
+  onClose: () => void
+  onStatus: (status: ZooStatus | undefined) => void
 }) {
-  const copy = statusCopy(status)
+  const [tab, setTab] = useState<DrawerTab>('overview')
+  const featuredAnimal = zoo.animals[0]
+  const drivingUrl = buildDirectionsUrl(HOME_BASE.coordinates, zoo.coordinates, 'driving')
+
   return (
-    <article className="zoo-card" style={{ '--zoo-dark': zoo.palette[0], '--zoo-bright': zoo.palette[1] } as React.CSSProperties}>
-      <div className="zoo-card-visual">
-        <div className="zoo-orbit orbit-one" />
-        <div className="zoo-orbit orbit-two" />
-        <span className="zoo-card-emoji">{zoo.heroEmoji}</span>
-        <span className="distance-pill"><Navigation size={13} /> {zoo.distanceMiles} mi</span>
-      </div>
-      <div className="zoo-card-body">
-        <div className="location-line"><MapPin size={14} /> {zoo.city}, {zoo.state}</div>
-        <h3>{zoo.name}</h3>
+    <aside className="zoo-drawer" role="dialog" aria-modal="false" aria-label={`${zoo.name} explorer`}>
+      <button type="button" className="drawer-close" onClick={onClose} aria-label="Close zoo explorer"><X size={20} /></button>
+      <div className="drawer-hero" style={{ '--zoo-dark': zoo.palette[0], '--zoo-bright': zoo.palette[1] } as React.CSSProperties}>
+        <div className="drawer-hero-grid" />
+        <span className="drawer-animal">{zoo.heroEmoji}</span>
+        <div className="drawer-location"><MapPin size={14} /> {zoo.city}, {zoo.state}</div>
+        <h2>{zoo.name}</h2>
         <p>{zoo.tagline}</p>
-        <div className="card-meta">
-          <span><Clock3 size={14} /> {zoo.driveTime}</span>
-          <span><PawPrint size={14} /> {zoo.animals.length} featured</span>
-        </div>
-        <div className="card-actions">
-          <button type="button" className="primary-button small" onClick={onExplore} aria-label={`Explore ${zoo.name}`}>
-            Explore <ArrowRight size={16} />
-          </button>
-          <button type="button" className={`status-button ${status ?? ''}`} onClick={onStatus}>
-            {copy.icon} {copy.label}
-          </button>
+        <div className="drawer-metrics">
+          <span><strong>{zoo.distanceMiles}</strong><small>MILES</small></span>
+          <span><strong>{zoo.driveTime.replace('About ', '')}</strong><small>DRIVE</small></span>
+          <span><strong>{zoo.animals.length}</strong><small>FEATURED</small></span>
         </div>
       </div>
-    </article>
+
+      <div className="drawer-primary-actions">
+        <button
+          type="button"
+          className={status === 'visited' ? 'visited' : ''}
+          onClick={() => onStatus(status === 'visited' ? undefined : 'visited')}
+          aria-label={status === 'visited' ? 'Remove visited status' : 'Mark visited'}
+        >
+          {status === 'visited' ? <Check size={17} /> : <PawPrint size={17} />}
+          {status === 'visited' ? 'Visited' : 'Mark visited'}
+        </button>
+        <button
+          type="button"
+          className={status === 'wishlist' ? 'wishlist' : ''}
+          onClick={() => onStatus(status === 'wishlist' ? undefined : 'wishlist')}
+        >
+          <Heart size={17} fill={status === 'wishlist' ? 'currentColor' : 'none'} />
+          {status === 'wishlist' ? 'Saved' : 'Want to go'}
+        </button>
+      </div>
+      <span className="drawer-progress" aria-live="polite">{visitedCount} of {zoos.length} zoos visited</span>
+
+      <div className="drawer-tabs" role="tablist" aria-label="Zoo explorer sections">
+        {(['overview', 'grounds', 'animals'] as DrawerTab[]).map((item) => (
+          <button type="button" role="tab" aria-selected={tab === item} className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>
+            {item === 'overview' ? 'Overview' : item === 'grounds' ? 'Zoo map' : 'Animals'}
+          </button>
+        ))}
+      </div>
+
+      <div className="drawer-scroll">
+        {tab === 'overview' && (
+          <div className="drawer-overview">
+            <p className="drawer-description">{zoo.description}</p>
+            <div className="highlight-list">
+              {zoo.highlights.map((highlight) => <span key={highlight}><Sparkles size={13} /> {highlight}</span>)}
+            </div>
+            <button type="button" className="enter-map-button" onClick={() => setTab('grounds')}>
+              <span><MapIcon size={20} /><span><small>ZOOM CLOSER</small><strong>Enter the zoo map</strong></span></span>
+              <ArrowUpRight size={19} />
+            </button>
+            <article className="featured-animal-mini" style={{ '--animal-accent': featuredAnimal.accent } as React.CSSProperties}>
+              <span>{featuredAnimal.emoji}</span>
+              <div><small>FEATURED ANIMAL</small><h3>{featuredAnimal.name}</h3><p>{featuredAnimal.fact}</p></div>
+            </article>
+            <div className="trip-links">
+              <a href={drivingUrl} target="_blank" rel="noreferrer"><CarFront size={18} /><span><small>ROUTE FROM WOODBINE</small><strong>Open live directions</strong></span><ExternalLink size={15} /></a>
+              <a href={zoo.officialUrl} target="_blank" rel="noreferrer"><Binoculars size={18} /><span><small>OFFICIAL ZOO SITE</small><strong>Hours, tickets & updates</strong></span><ExternalLink size={15} /></a>
+            </div>
+          </div>
+        )}
+        {tab === 'grounds' && (
+          <div className="drawer-grounds">
+            <div className="drawer-section-heading"><small>ORIGINAL INTERACTIVE MAP</small><h3>Explore the grounds</h3><p>Tap a habitat to move through the zoo.</p></div>
+            <HabitatExplorer spots={zoo.mapSpots} palette={zoo.palette} />
+          </div>
+        )}
+        {tab === 'animals' && (
+          <div className="drawer-animals">
+            <div className="drawer-section-heading"><small>ANIMAL RADAR</small><h3>Who lives here?</h3><p>Meet a few of the zoo’s featured residents.</p></div>
+            <AnimalExplorer animals={zoo.animals} />
+            <a className="official-animal-link" href={zoo.sourceUrl} target="_blank" rel="noreferrer">See the official animal list <ExternalLink size={15} /></a>
+          </div>
+        )}
+      </div>
+    </aside>
   )
 }
 
-function PassportView({
+function PassportOverlay({
   passport,
+  onClose,
+  onSelect,
   setStatus,
-  onExplore,
 }: {
   passport: Record<string, ZooStatus | undefined>
+  onClose: () => void
+  onSelect: (zoo: Zoo) => void
   setStatus: (id: string, status: ZooStatus | undefined) => void
-  onExplore: (zoo: Zoo) => void
 }) {
-  const visited = zoos.filter((zoo) => passport[zoo.id] === 'visited')
-  const wishlist = zoos.filter((zoo) => passport[zoo.id] === 'wishlist')
-
   return (
-    <main className="page-shell passport-page">
-      <section className="passport-hero">
-        <div>
-          <span className="eyebrow light">JASPER’S FIELD BOOK</span>
-          <h1>Your zoo passport</h1>
-          <p>Every stamp is a day of discovery. Save the places you’ve explored and choose the next adventure.</p>
+    <div className="overlay-scrim" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
+      <section className="passport-overlay" role="dialog" aria-modal="true" aria-label="Zoo passport">
+        <button type="button" className="overlay-close" onClick={onClose} aria-label="Close passport"><X size={20} /></button>
+        <div className="passport-overlay-heading">
+          <span className="passport-seal"><PawPrint size={28} /></span>
+          <div><small>JASPER’S FIELD BOOK</small><h2>Zoo passport</h2><p>Choose the next expedition or stamp a place you’ve explored.</p></div>
         </div>
-        <div className="passport-book-mark"><PawPrint size={40} /><span>JZM</span></div>
-      </section>
-
-      <section className="passport-section">
-        <div className="section-heading compact">
-          <div>
-            <span className="eyebrow">STAMP COLLECTION</span>
-            <h2>{visited.length ? `${visited.length} zoo ${visited.length === 1 ? 'stamp' : 'stamps'} earned` : 'Your first stamp is waiting'}</h2>
-          </div>
-        </div>
-        <div className="stamp-grid">
+        <div className="passport-map-grid">
           {zoos.map((zoo, index) => {
             const status = passport[zoo.id]
             return (
-              <article className={`passport-stamp ${status ?? 'locked'}`} key={zoo.id}>
-                <div className="stamp-number">0{index + 1}</div>
-                <div className="stamp-ring" style={{ '--stamp-color': zoo.palette[1] } as React.CSSProperties}>
+              <article className={`passport-map-card ${status ?? ''}`} key={zoo.id}>
+                <span className="passport-card-number">0{index + 1}</span>
+                <button type="button" className="passport-zoo-orb" onClick={() => { onSelect(zoo); onClose() }} aria-label={`Fly to ${zoo.name}`}>
                   <span>{status === 'visited' ? zoo.heroEmoji : status === 'wishlist' ? '✦' : '?'}</span>
-                </div>
+                </button>
                 <small>{status === 'visited' ? 'EXPLORED' : status === 'wishlist' ? 'NEXT UP' : 'UNDISCOVERED'}</small>
                 <h3>{zoo.shortName}</h3>
                 <p>{zoo.city}, {zoo.state}</p>
-                <div className="stamp-actions">
-                  <button type="button" onClick={() => onExplore(zoo)}>View zoo</button>
-                  {status === 'visited' ? (
-                    <button type="button" onClick={() => setStatus(zoo.id, undefined)}>Reset</button>
-                  ) : (
-                    <button type="button" onClick={() => setStatus(zoo.id, 'visited')}>Stamp visited</button>
-                  )}
-                </div>
+                <button type="button" className="passport-stamp-action" onClick={() => setStatus(zoo.id, status === 'visited' ? undefined : 'visited')}>
+                  {status === 'visited' ? 'Remove stamp' : 'Stamp visited'}
+                </button>
               </article>
             )
           })}
         </div>
       </section>
-
-      <section className="passport-summary">
-        <div><Star size={23} /><span><strong>{visited.length}</strong> visited</span></div>
-        <div><Heart size={23} /><span><strong>{wishlist.length}</strong> on the wish list</span></div>
-        <div><Map size={23} /><span><strong>{Math.max(0, zoos.length - visited.length - wishlist.length)}</strong> still to discover</span></div>
-      </section>
-    </main>
-  )
-}
-
-function ZooDetail({
-  zoo,
-  status,
-  onBack,
-  setStatus,
-  visitedCount,
-}: {
-  zoo: Zoo
-  status: ZooStatus | undefined
-  onBack: () => void
-  setStatus: (status: ZooStatus | undefined) => void
-  visitedCount: number
-}) {
-  const [animalIndex, setAnimalIndex] = useState(0)
-  const selectedAnimal = zoo.animals[animalIndex]
-  const drivingUrl = buildDirectionsUrl(HOME_BASE.coordinates, zoo.coordinates, 'driving')
-  const transitUrl = buildDirectionsUrl(HOME_BASE.coordinates, zoo.coordinates, 'transit')
-
-  return (
-    <main className="zoo-detail">
-      <section className="detail-hero" style={{ '--zoo-dark': zoo.palette[0], '--zoo-bright': zoo.palette[1] } as React.CSSProperties}>
-        <div className="detail-hero-art">
-          <span className="detail-animal">{zoo.heroEmoji}</span>
-          <div className="hero-leaf leaf-a">✦</div>
-          <div className="hero-leaf leaf-b">●</div>
-          <div className="hero-route-line" />
-        </div>
-        <div className="detail-hero-content page-shell">
-          <button type="button" className="back-button" onClick={onBack}><ArrowLeft size={17} /> Back to atlas</button>
-          <div className="detail-copy">
-            <div className="location-line light"><MapPin size={15} /> {zoo.city}, {zoo.state} · {zoo.distanceMiles} miles from home</div>
-            <h1>{zoo.name}</h1>
-            <p>{zoo.description}</p>
-            <div className="hero-highlights">
-              {zoo.highlights.map((highlight) => <span key={highlight}><Sparkles size={14} /> {highlight}</span>)}
-            </div>
-            <div className="detail-actions">
-              <button type="button" className={`primary-button cream ${status === 'visited' ? 'complete' : ''}`} onClick={() => setStatus(status === 'visited' ? undefined : 'visited')} aria-label={status === 'visited' ? 'Remove visited status' : 'Mark visited'}>
-                {status === 'visited' ? <><Check size={18} /> Visited!</> : <><PawPrint size={18} /> Mark visited</>}
-              </button>
-              <button type="button" className="ghost-button light" onClick={() => setStatus(status === 'wishlist' ? undefined : 'wishlist')}>
-                <Heart size={18} fill={status === 'wishlist' ? 'currentColor' : 'none'} /> {status === 'wishlist' ? 'On wish list' : 'Want to visit'}
-              </button>
-            </div>
-          </div>
-          <div className="detail-stat-card">
-            <span className="eyebrow light">YOUR PASSPORT</span>
-            <strong>{visitedCount} of {zoos.length}</strong>
-            <span>zoos explored</span>
-            <span className="detail-progress-text" aria-live="polite">{visitedCount} of {zoos.length} zoos visited</span>
-            <div className="mini-progress"><i style={{ width: `${(visitedCount / zoos.length) * 100}%` }} /></div>
-          </div>
-        </div>
-      </section>
-
-      <div className="page-shell detail-body">
-        <section className="trip-panel">
-          <div className="trip-copy">
-            <span className="eyebrow">PLAN FROM WOODBINE</span>
-            <h2>How should we get there?</h2>
-            <p>Route estimates are a starting point. Open the live route before you leave for current traffic and schedules.</p>
-          </div>
-          <div className="travel-options">
-            <a href={drivingUrl} target="_blank" rel="noreferrer" className="travel-card featured">
-              <CarFront size={25} />
-              <span><small>DRIVE</small><strong>{zoo.driveTime}</strong><em>{zoo.distanceMiles} miles</em></span>
-              <ExternalLink size={16} />
-            </a>
-            <a href={transitUrl} target="_blank" rel="noreferrer" className="travel-card">
-              <TrainFront size={25} />
-              <span><small>TRAIN + TRANSIT</small><strong>Check live route</strong><em>{zoo.transitNote}</em></span>
-              <ExternalLink size={16} />
-            </a>
-            <a href={zoo.officialUrl} target="_blank" rel="noreferrer" className="travel-card">
-              <CalendarDays size={25} />
-              <span><small>BEFORE YOU GO</small><strong>Hours & tickets</strong><em>Open the zoo’s official site</em></span>
-              <ExternalLink size={16} />
-            </a>
-          </div>
-        </section>
-
-        <ZooCampusMap spots={zoo.mapSpots} palette={zoo.palette} />
-
-        <section className="animal-explorer">
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow">MEET THE ANIMALS</span>
-              <h2>Who lives here?</h2>
-            </div>
-            <a href={zoo.sourceUrl} target="_blank" rel="noreferrer">Official animal list <ExternalLink size={15} /></a>
-          </div>
-          <div className="animal-layout">
-            <div className="animal-tabs" role="tablist" aria-label="Featured animals">
-              {zoo.animals.map((animal, index) => (
-                <button
-                  type="button"
-                  key={animal.name}
-                  className={index === animalIndex ? 'active' : ''}
-                  onClick={() => setAnimalIndex(index)}
-                  role="tab"
-                  aria-selected={index === animalIndex}
-                >
-                  <span style={{ background: animal.accent }}>{animal.emoji}</span>
-                  <div><strong>{animal.name}</strong><small>{animal.habitat}</small></div>
-                  <ChevronRight size={18} />
-                </button>
-              ))}
-            </div>
-            <article className="featured-animal" style={{ '--animal-accent': selectedAnimal.accent } as React.CSSProperties}>
-              <div className="featured-animal-art"><span>{selectedAnimal.emoji}</span><i /><b /></div>
-              <div className="featured-animal-copy">
-                <span className="animal-status">{selectedAnimal.status}</span>
-                <h3>{selectedAnimal.name}</h3>
-                <em>{selectedAnimal.scientificName}</em>
-                <p>{selectedAnimal.fact}</p>
-                <div className="animal-home"><MapPin size={16} /><span><small>FIND IT AT</small><strong>{selectedAnimal.habitat}</strong></span></div>
-              </div>
-            </article>
-          </div>
-        </section>
-      </div>
-    </main>
-  )
-}
-
-export default function App() {
-  const [view, setView] = useState<View>('atlas')
-  const [selectedZoo, setSelectedZoo] = useState<Zoo | null>(null)
-  const [query, setQuery] = useState('')
-  const zooIds = useMemo(() => zoos.map((zoo) => zoo.id), [])
-  const { passport, stats, setStatus } = usePassport(zooIds)
-
-  const filteredZoos = zoos.filter((zoo) => `${zoo.name} ${zoo.city} ${zoo.state}`.toLowerCase().includes(query.toLowerCase()))
-
-  function showAtlas() {
-    setSelectedZoo(null)
-    setView('atlas')
-  }
-
-  if (selectedZoo) {
-    return (
-      <div className="app">
-        <SiteHeader view={view} onAtlas={showAtlas} onPassport={() => { setSelectedZoo(null); setView('passport') }} />
-        <ZooDetail
-          zoo={selectedZoo}
-          status={passport[selectedZoo.id]}
-          onBack={showAtlas}
-          setStatus={(status) => setStatus(selectedZoo.id, status)}
-          visitedCount={stats.visited}
-        />
-        <SiteFooter />
-      </div>
-    )
-  }
-
-  return (
-    <div className="app">
-      <SiteHeader view={view} onAtlas={showAtlas} onPassport={() => setView('passport')} />
-      {view === 'passport' ? (
-        <PassportView passport={passport} setStatus={setStatus} onExplore={setSelectedZoo} />
-      ) : (
-        <main>
-          <section className="home-hero">
-            <div className="hero-sun" />
-            <div className="hero-cloud cloud-one" />
-            <div className="hero-cloud cloud-two" />
-            <div className="hero-hills hill-back" />
-            <div className="hero-hills hill-front" />
-            <div className="page-shell home-hero-inner">
-              <div className="hero-copy">
-                <span className="eyebrow light">A FAMILY ATLAS OF WILD PLACES</span>
-                <h1 aria-label="Jasper's Zoo Maps">Jasper’s<br /><em>Zoo Maps</em></h1>
-                <p>Explore every zoo, plan the next adventure, and collect every memory along the way.</p>
-                <div className="hero-search">
-                  <Search size={20} />
-                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a zoo, city or animal…" aria-label="Search zoos" />
-                  <span>{filteredZoos.length} nearby</span>
-                </div>
-              </div>
-              <div className="hero-passport-card">
-                <div className="passport-ring" style={{ '--progress': `${stats.percent * 3.6}deg` } as React.CSSProperties}>
-                  <div><strong>{stats.visited}</strong><span>VISITED</span></div>
-                </div>
-                <div>
-                  <span className="eyebrow light">JASPER’S PASSPORT</span>
-                  <h2>{stats.visited} of {stats.total} zoos visited</h2>
-                  <p>{stats.wishlist ? `${stats.wishlist} saved for the next trip.` : 'Pick a zoo to start the adventure.'}</p>
-                  <button type="button" onClick={() => setView('passport')}>Open passport <ArrowRight size={16} /></button>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="page-shell atlas-section">
-            <div className="section-heading">
-              <div>
-                <span className="eyebrow">STARTER EXPEDITIONS</span>
-                <h2>Four zoos. One home base.</h2>
-                <p>A first playable hub from Woodbine, Maryland—built to expand across the country.</p>
-              </div>
-              <div className="section-chip"><Binoculars size={18} /> Northeast collection</div>
-            </div>
-            <AtlasMap zoos={filteredZoos} onSelect={setSelectedZoo} />
-          </section>
-
-          <section className="page-shell zoo-list-section">
-            <div className="section-heading compact">
-              <div>
-                <span className="eyebrow">CHOOSE AN ADVENTURE</span>
-                <h2>Where should we go next?</h2>
-              </div>
-              <span className="result-count">{filteredZoos.length} zoos</span>
-            </div>
-            <div className="zoo-grid">
-              {filteredZoos.map((zoo) => (
-                <ZooCard
-                  key={zoo.id}
-                  zoo={zoo}
-                  status={passport[zoo.id]}
-                  onExplore={() => setSelectedZoo(zoo)}
-                  onStatus={() => {
-                    const current = passport[zoo.id]
-                    setStatus(zoo.id, !current ? 'wishlist' : current === 'wishlist' ? 'visited' : undefined)
-                  }}
-                />
-              ))}
-            </div>
-            {!filteredZoos.length && (
-              <div className="empty-state"><CircleHelp size={36} /><h3>No zoo found yet</h3><p>Try a city, state, or one of the four starter zoo names.</p></div>
-            )}
-          </section>
-
-          <section className="page-shell coming-soon">
-            <div className="coming-icon"><BusFront size={30} /></div>
-            <div><span className="eyebrow light">THE ROAD AHEAD</span><h2>Next stop: every zoo in America.</h2><p>Regional collections, road-trip routes, family journals, live cameras and immersive 3D habitat walks can grow from this first atlas.</p></div>
-            <ListChecks size={54} />
-          </section>
-        </main>
-      )}
-      <SiteFooter />
     </div>
   )
 }
 
-function SiteHeader({ view, onAtlas, onPassport }: { view: View; onAtlas: () => void; onPassport: () => void }) {
-  return (
-    <header className="site-header">
-      <button type="button" className="brand" onClick={onAtlas}>
-        <span><PawPrint size={22} /></span>
-        <div><strong>Jasper’s</strong><small>ZOO MAPS</small></div>
-      </button>
-      <nav aria-label="Primary navigation">
-        <button type="button" className={view === 'atlas' ? 'active' : ''} onClick={onAtlas}><Map size={17} /> Explore</button>
-        <button type="button" className={view === 'passport' ? 'active' : ''} onClick={onPassport}><PawPrint size={17} /> My Passport</button>
-      </nav>
-      <div className="home-base"><MapPin size={15} /><span><small>HOME BASE</small>Woodbine, MD</span></div>
-    </header>
-  )
-}
+export default function App() {
+  const mapRef = useRef<MapExplorerHandle | null>(null)
+  const [selectedZoo, setSelectedZoo] = useState<Zoo | null>(null)
+  const [query, setQuery] = useState('')
+  const [threeDimensional, setThreeDimensional] = useState(true)
+  const [passportOpen, setPassportOpen] = useState(false)
+  const zooIds = useMemo(() => zoos.map((zoo) => zoo.id), [])
+  const { passport, stats, setStatus } = usePassport(zooIds)
 
-function SiteFooter() {
+  const filteredZoos = useMemo(
+    () => zoos.filter((zoo) => matchesZoo(zoo, query)),
+    [query],
+  )
+  const visibleZooIds = useMemo(() => filteredZoos.map((zoo) => zoo.id), [filteredZoos])
+
+  function selectZoo(zoo: Zoo) {
+    setSelectedZoo(zoo)
+    mapRef.current?.flyToZoo(zoo)
+  }
+
+  function resetGlobe() {
+    setSelectedZoo(null)
+    mapRef.current?.reset()
+  }
+
+  function toggleDimension() {
+    const next = !threeDimensional
+    setThreeDimensional(next)
+    mapRef.current?.setThreeDimensional(next)
+  }
+
   return (
-    <footer className="site-footer">
-      <div className="brand footer-brand"><span><PawPrint size={20} /></span><div><strong>Jasper’s</strong><small>ZOO MAPS</small></div></div>
-      <p>Built for curious explorers. Zoo details are a family-planning preview; verify hours, animals and access on each zoo’s official site.</p>
-      <span>Prototype atlas · Original maps · 2026</span>
-    </footer>
+    <div className="earth-app">
+      <main className={`earth-stage ${selectedZoo ? 'has-selection' : ''}`} aria-label="Interactive 3D zoo globe">
+        <MapExplorer
+          ref={mapRef}
+          zoos={zoos}
+          visibleZooIds={visibleZooIds}
+          selectedId={selectedZoo?.id}
+          threeDimensional={threeDimensional}
+          onSelect={setSelectedZoo}
+        />
+        <div className="earth-vignette" aria-hidden="true" />
+
+        <ExplorerHeader visited={stats.visited} total={stats.total} onReset={resetGlobe} onOpenPassport={() => setPassportOpen(true)} />
+
+        <section className="explorer-intro" aria-label="Explorer introduction">
+          <span><i /> ZOO EARTH · BETA</span>
+          <h2>Explore from orbit<br />to animal habitat.</h2>
+          <p>Drag the globe, zoom into a city, then enter a zoo.</p>
+        </section>
+
+        <label className="map-search">
+          <Search size={19} />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search zoo, city, animal…"
+            aria-label="Search zoos"
+          />
+          {query && <button type="button" onClick={() => setQuery('')} aria-label="Clear search"><X size={15} /></button>}
+          <span>{filteredZoos.length}</span>
+        </label>
+
+        <MapControls
+          threeDimensional={threeDimensional}
+          onReset={resetGlobe}
+          onToggleDimension={toggleDimension}
+          onHome={() => mapRef.current?.flyHome()}
+        />
+
+        <div className="map-context-chip"><Route size={14} /><span><small>ORIGIN</small>Woodbine, Maryland</span></div>
+
+        <DiscoveryRail zoos={filteredZoos} selectedId={selectedZoo?.id} passport={passport} onSelect={selectZoo} />
+
+        {selectedZoo && (
+          <ZooDrawer
+            key={selectedZoo.id}
+            zoo={selectedZoo}
+            status={passport[selectedZoo.id]}
+            visitedCount={stats.visited}
+            onClose={() => setSelectedZoo(null)}
+            onStatus={(status) => setStatus(selectedZoo.id, status)}
+          />
+        )}
+      </main>
+
+      {passportOpen && (
+        <PassportOverlay
+          passport={passport}
+          onClose={() => setPassportOpen(false)}
+          onSelect={selectZoo}
+          setStatus={setStatus}
+        />
+      )}
+    </div>
   )
 }
